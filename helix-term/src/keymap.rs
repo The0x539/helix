@@ -191,6 +191,10 @@ impl KeyTrieNode {
         self.map.len() + self.fallback.is_some() as usize
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (Option<KeyEvent>, &KeyTrie)> {
         self.map
             .iter()
