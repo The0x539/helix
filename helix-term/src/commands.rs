@@ -66,6 +66,7 @@ pub struct Context<'a> {
     pub register: Option<char>,
     pub count: Option<NonZeroUsize>,
     pub editor: &'a mut Editor,
+    pub last_key: Option<KeyEvent>,
 
     pub callback: Option<crate::compositor::Callback>,
     pub on_next_key_callback: Option<Box<dyn FnOnce(&mut Context, KeyEvent)>>,
@@ -393,8 +394,20 @@ impl MappableCommand {
         surround_add, "Surround add",
         surround_replace, "Surround replace",
         surround_delete, "Surround delete",
-        select_textobject_around, "Select around object",
-        select_textobject_inner, "Select inside object",
+        select_around_word, "Select around current word",
+        select_inside_word, "Select inside current word",
+        select_around_long_word, "Select around current long word",
+        select_inside_long_word, "Select inside current long word",
+        select_around_class, "Select around current class",
+        select_inside_class, "Select inside current class",
+        select_around_function, "Select around current function",
+        select_inside_function, "Select inside current function",
+        select_around_parameter, "Select around current parameter",
+        select_inside_parameter, "Select inside current parameter",
+        select_around_cursor_pair, "Select around matching delimiter under cursor",
+        select_inside_cursor_pair, "Select inside matching delimiter under cursor",
+        select_around_pair, "Select around matching delimiter",
+        select_inside_pair, "Select inside maching delimiter",
         goto_next_function, "Goto next function",
         goto_prev_function, "Goto previous function",
         goto_next_class, "Goto next class",
@@ -3525,6 +3538,7 @@ pub fn command_palette(cx: &mut Context) {
                         register: None,
                         count: std::num::NonZeroUsize::new(1),
                         editor: cx.editor,
+                        last_key: None,
                         callback: None,
                         on_next_key_callback: None,
                         jobs: cx.jobs,
@@ -5343,23 +5357,25 @@ fn goto_prev_parameter(cx: &mut Context) {
     goto_ts_object_impl(cx, "parameter", Direction::Backward)
 }
 
-fn select_textobject_around(cx: &mut Context) {
-    select_textobject(cx, textobject::TextObject::Around);
+enum TextObjectSel {
+    Word(bool),
+    Treesitter(&'static str),
+    Matching(Option<char>),
 }
 
-fn select_textobject_inner(cx: &mut Context) {
-    select_textobject(cx, textobject::TextObject::Inside);
-}
-
-fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
+fn select_textobject(cx: &mut Context, objtype: textobject::TextObject, objsel: TextObjectSel) {
     let count = cx.count();
-    cx.on_next_key(move |cx, event| {
-        if let Some(ch) = event.char() {
-            let textobject = move |editor: &mut Editor| {
-                let (view, doc) = current!(editor);
-                let text = doc.text().slice(..);
 
-                let textobject_treesitter = |obj_name: &str, range: Range| -> Range {
+    let textobject = move |editor: &mut Editor| {
+        let (view, doc) = current!(editor);
+        let text = doc.text().slice(..);
+
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            match objsel {
+                TextObjectSel::Word(long) => {
+                    textobject::textobject_word(text, range, objtype, count, long)
+                }
+                TextObjectSel::Treesitter(obj_name) => {
                     let (lang_config, syntax) = match doc.language_config().zip(doc.syntax()) {
                         Some(t) => t,
                         None => return range,
@@ -5373,36 +5389,71 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                         lang_config,
                         count,
                     )
-                };
-
-                let selection = doc.selection(view.id).clone().transform(|range| {
-                    match ch {
-                        'w' => textobject::textobject_word(text, range, objtype, count, false),
-                        'W' => textobject::textobject_word(text, range, objtype, count, true),
-                        'c' => textobject_treesitter("class", range),
-                        'f' => textobject_treesitter("function", range),
-                        'p' => textobject_treesitter("parameter", range),
-                        'm' => {
-                            let ch = text.char(range.cursor(text));
-                            if !ch.is_ascii_alphanumeric() {
-                                textobject::textobject_surround(text, range, objtype, ch, count)
-                            } else {
-                                range
-                            }
-                        }
-                        // TODO: cancel new ranges if inconsistent surround matches across lines
-                        ch if !ch.is_ascii_alphanumeric() => {
-                            textobject::textobject_surround(text, range, objtype, ch, count)
-                        }
-                        _ => range,
+                }
+                TextObjectSel::Matching(ch) => {
+                    let ch = ch.unwrap_or_else(|| text.char(range.cursor(text)));
+                    if ch.is_ascii_alphanumeric() {
+                        return range;
                     }
-                });
-                doc.set_selection(view.id, selection);
-            };
-            textobject(cx.editor);
-            cx.editor.last_motion = Some(Motion(Box::new(textobject)));
-        }
-    })
+                    // TODO: cancel new ranges if inconsistent surround matches across lines
+                    textobject::textobject_surround(text, range, objtype, ch, count)
+                }
+            }
+        });
+
+        doc.set_selection(view.id, selection);
+    };
+    textobject(cx.editor);
+    cx.editor.last_motion = Some(Motion(Box::new(textobject)));
+}
+
+macro_rules! select_textobject_commands {
+    ( $($name:ident($objtype:ident, $objsel:ident($val:expr));)* ) => {
+        $(
+            fn $name(cx: &mut Context) {
+                select_textobject(
+                    cx,
+                    textobject::TextObject::$objtype,
+                    TextObjectSel::$objsel($val),
+                )
+            }
+        )*
+    };
+}
+
+select_textobject_commands! {
+    select_around_word(Around, Word(false));
+    select_inside_word(Inside, Word(false));
+    select_around_long_word(Around, Word(true));
+    select_inside_long_word(Inside, Word(true));
+    select_around_class(Around, Treesitter("class"));
+    select_inside_class(Inside, Treesitter("class"));
+    select_around_function(Around, Treesitter("function"));
+    select_inside_function(Inside, Treesitter("function"));
+    select_around_parameter(Around, Treesitter("parameter"));
+    select_inside_parameter(Inside, Treesitter("parameter"));
+    select_around_cursor_pair(Around, Matching(None));
+    select_inside_cursor_pair(Inside, Matching(None));
+}
+
+fn select_inside_pair(cx: &mut Context) {
+    if let Some(ch) = cx.last_key.and_then(|ev| ev.char()) {
+        select_textobject(
+            cx,
+            textobject::TextObject::Inside,
+            TextObjectSel::Matching(Some(ch)),
+        )
+    }
+}
+
+fn select_around_pair(cx: &mut Context) {
+    if let Some(ch) = cx.last_key.and_then(|ev| ev.char()) {
+        select_textobject(
+            cx,
+            textobject::TextObject::Around,
+            TextObjectSel::Matching(Some(ch)),
+        )
+    }
 }
 
 fn surround_add(cx: &mut Context) {

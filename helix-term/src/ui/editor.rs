@@ -709,6 +709,7 @@ impl EditorView {
         cxt: &mut commands::Context,
         event: KeyEvent,
     ) -> Option<KeymapResult> {
+        cxt.last_key = Some(event);
         cxt.editor.autoinfo = None;
         let key_result = self.keymaps.get_mut(&mode).unwrap().get(event);
         cxt.editor.autoinfo = key_result.sticky.map(|node| node.infobox());
@@ -1040,6 +1041,7 @@ impl Component for EditorView {
             count: None,
             register: None,
             callback: None,
+            last_key: None,
             on_next_key_callback: None,
             jobs: context.jobs,
         };

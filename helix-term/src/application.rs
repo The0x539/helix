@@ -296,6 +296,7 @@ impl Application {
         let mut cx = Context {
             register: None,
             editor: &mut self.editor,
+            last_key: None,
             jobs: &mut self.jobs,
             count: None,
             callback: None,

@@ -599,8 +599,25 @@ impl Default for Keymaps {
                 "s" => surround_add,
                 "r" => surround_replace,
                 "d" => surround_delete,
-                "a" => select_textobject_around,
-                "i" => select_textobject_inner,
+                "a" => { "Select around"
+                    "w" => select_around_word,
+                    "W" => select_around_long_word,
+                    "c" => select_around_class,
+                    "f" => select_around_function,
+                    "p" => select_around_parameter,
+                    "m" => select_around_cursor_pair,
+                    // TODO: "fallback" support
+                    "(" | ")" | "[" | "]" | "'" | "\"" | "<" | ">" | "`" => select_around_pair,
+                },
+                "i" => { "Select inside"
+                    "w" => select_inside_word,
+                    "W" => select_inside_long_word,
+                    "c" => select_inside_class,
+                    "f" => select_inside_function,
+                    "p" => select_inside_parameter,
+                    "m" => select_inside_cursor_pair,
+                    "(" | ")" | "[" | "]" | "'" | "\"" | "<" | ">" | "`" => select_inside_pair,
+                },
             },
             "[" => { "Left bracket"
                 "d" => goto_prev_diag,
