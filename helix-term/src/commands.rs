@@ -3507,12 +3507,12 @@ pub fn command_palette(cx: &mut Context) {
 
             // formats key bindings, multiple bindings are comma separated,
             // individual key presses are joined with `+`
-            let fmt_binding = |bindings: &Vec<Vec<KeyEvent>>| -> String {
+            let fmt_binding = |bindings: &Vec<Vec<Option<KeyEvent>>>| -> String {
                 bindings
                     .iter()
                     .map(|bind| {
                         bind.iter()
-                            .map(|key| key.to_string())
+                            .map(|key| key.map_or("…".into(), |k| k.to_string()))
                             .collect::<Vec<String>>()
                             .join("+")
                     })

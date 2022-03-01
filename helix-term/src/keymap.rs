@@ -96,9 +96,15 @@ macro_rules! keymap {
     };
 
     (@trie
-        { $label:literal $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+ }
+        { $label:literal
+            $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+
+            $(_ => $fallback:tt,)?
+        }
     ) => {
-        keymap!({ $label $(sticky=$sticky)? $($($key)|+ => $value,)+ })
+        keymap!({
+            $label $(sticky=$sticky)? $($($key)|+ => $value,)+
+            $(_ => $fallback,)?
+        })
     };
 
     (@trie [$($cmd:ident),* $(,)?]) => {
@@ -106,7 +112,10 @@ macro_rules! keymap {
     };
 
     (
-        { $label:literal $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+ }
+        { $label:literal
+            $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+
+            $(_ => $fallback:tt,)?
+        }
     ) => {
         // modified from the hashmap! macro
         {
@@ -124,8 +133,9 @@ macro_rules! keymap {
                     _order.push(_key);
                 )+
             )*
-            let mut _node = $crate::keymap::KeyTrieNode::new($label, _map, _order);
+            let mut _node = $crate::keymap::KeyTrieNode::new($label, _map, _order, None);
             $( _node.is_sticky = $sticky; )?
+            $( _node.fallback = Some(Box::new(keymap!(@trie $fallback))); )?
             $crate::keymap::KeyTrie::Node(_node)
         }
     };
@@ -136,6 +146,8 @@ pub struct KeyTrieNode {
     /// A label for keys coming under this node, like "Goto mode"
     name: String,
     map: HashMap<KeyEvent, KeyTrie>,
+    // TODO: deserialize this, somehow
+    fallback: Option<Box<KeyTrie>>,
     order: Vec<KeyEvent>,
     pub is_sticky: bool,
 }
@@ -156,10 +168,16 @@ impl<'de> Deserialize<'de> for KeyTrieNode {
 }
 
 impl KeyTrieNode {
-    pub fn new(name: &str, map: HashMap<KeyEvent, KeyTrie>, order: Vec<KeyEvent>) -> Self {
+    pub fn new(
+        name: &str,
+        map: HashMap<KeyEvent, KeyTrie>,
+        order: Vec<KeyEvent>,
+        fallback: Option<KeyTrie>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             map,
+            fallback: fallback.map(Box::new),
             order,
             is_sticky: false,
         }
@@ -167,6 +185,21 @@ impl KeyTrieNode {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len() + self.fallback.is_some() as usize
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Option<KeyEvent>, &KeyTrie)> {
+        self.map
+            .iter()
+            .map(|(k, v)| (Some(*k), v))
+            .chain(self.fallback.as_deref().map(|trie| (None, trie)))
+    }
+
+    pub fn get(&self, key: &KeyEvent) -> Option<&KeyTrie> {
+        self.map.get(key).or(self.fallback.as_deref())
     }
 
     /// Merge another Node in. Leaves and subnodes from the other node replace
@@ -187,11 +220,14 @@ impl KeyTrieNode {
                 self.order.push(key);
             }
         }
+        if self.fallback.is_none() {
+            self.fallback = other.fallback;
+        }
     }
 
     pub fn infobox(&self) -> Info {
-        let mut body: Vec<(&str, BTreeSet<KeyEvent>)> = Vec::with_capacity(self.len());
-        for (&key, trie) in self.iter() {
+        let mut body: Vec<(&str, BTreeSet<Option<KeyEvent>>)> = Vec::with_capacity(self.len());
+        for (key, trie) in self.iter() {
             let desc = match trie {
                 KeyTrie::Leaf(cmd) => {
                     if cmd.name() == "no_op" {
@@ -210,10 +246,10 @@ impl KeyTrieNode {
             }
         }
         body.sort_unstable_by_key(|(_, keys)| {
-            self.order
-                .iter()
-                .position(|&k| k == *keys.iter().next().unwrap())
-                .unwrap()
+            match keys.iter().next().unwrap() {
+                Some(key) => self.order.iter().position(|k| k == key).unwrap(),
+                None => usize::MAX, // fallback goes at the end
+            }
         });
         let prefix = format!("{} ", self.name());
         if body.iter().all(|(desc, _)| desc.starts_with(&prefix)) {
@@ -232,27 +268,13 @@ impl KeyTrieNode {
 
 impl Default for KeyTrieNode {
     fn default() -> Self {
-        Self::new("", HashMap::new(), Vec::new())
+        Self::new("", HashMap::new(), Vec::new(), None)
     }
 }
 
 impl PartialEq for KeyTrieNode {
     fn eq(&self, other: &Self) -> bool {
-        self.map == other.map
-    }
-}
-
-impl Deref for KeyTrieNode {
-    type Target = HashMap<KeyEvent, KeyTrie>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.map
-    }
-}
-
-impl DerefMut for KeyTrieNode {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.map
+        self.map == other.map && self.fallback == other.fallback
     }
 }
 
@@ -350,12 +372,12 @@ impl Keymap {
         }
     }
 
-    pub fn reverse_map(&self) -> HashMap<String, Vec<Vec<KeyEvent>>> {
+    pub fn reverse_map(&self) -> HashMap<String, Vec<Vec<Option<KeyEvent>>>> {
         // recursively visit all nodes in keymap
         fn map_node(
-            cmd_map: &mut HashMap<String, Vec<Vec<KeyEvent>>>,
+            cmd_map: &mut HashMap<String, Vec<Vec<Option<KeyEvent>>>>,
             node: &KeyTrie,
-            keys: &mut Vec<KeyEvent>,
+            keys: &mut Vec<Option<KeyEvent>>,
         ) {
             match node {
                 KeyTrie::Leaf(cmd) => match cmd {
@@ -369,7 +391,12 @@ impl Keymap {
                 },
                 KeyTrie::Node(next) => {
                     for (key, trie) in &next.map {
-                        keys.push(*key);
+                        keys.push(Some(*key));
+                        map_node(cmd_map, trie, keys);
+                        keys.pop();
+                    }
+                    if let Some(trie) = &next.fallback {
+                        keys.push(None);
                         map_node(cmd_map, trie, keys);
                         keys.pop();
                     }
@@ -606,8 +633,7 @@ impl Default for Keymaps {
                     "f" => select_around_function,
                     "p" => select_around_parameter,
                     "m" => select_around_cursor_pair,
-                    // TODO: "fallback" support
-                    "(" | ")" | "[" | "]" | "'" | "\"" | "<" | ">" | "`" => select_around_pair,
+                    _ => select_around_pair,
                 },
                 "i" => { "Select inside"
                     "w" => select_inside_word,
@@ -616,7 +642,7 @@ impl Default for Keymaps {
                     "f" => select_inside_function,
                     "p" => select_inside_parameter,
                     "m" => select_inside_cursor_pair,
-                    "(" | ")" | "[" | "]" | "'" | "\"" | "<" | ">" | "`" => select_inside_pair,
+                    _ => select_inside_pair,
                 },
             },
             "[" => { "Left bracket"
@@ -1019,6 +1045,14 @@ mod tests {
                 "e" => goto_file_end,
             },
             "j" | "k" => move_line_down,
+            "m" => { "Match"
+                "m" => match_brackets,
+                "a" => { "Select around"
+                    "w" => select_around_word,
+                    "W" => select_around_long_word,
+                    _ => select_around_pair,
+                },
+            },
         });
         let keymap = Keymap::new(normal_mode);
         let mut reverse_map = keymap.reverse_map();
@@ -1030,24 +1064,36 @@ mod tests {
             v.sort()
         }
 
-        assert_eq!(
-            reverse_map,
-            HashMap::from([
-                ("insert_mode".to_string(), vec![vec![key!('i')]]),
-                (
-                    "goto_file_start".to_string(),
-                    vec![vec![key!('g'), key!('g')]]
-                ),
-                (
-                    "goto_file_end".to_string(),
-                    vec![vec![key!('g'), key!('e')]]
-                ),
-                (
-                    "move_line_down".to_string(),
-                    vec![vec![key!('j')], vec![key!('k')]]
-                ),
-            ]),
-            "Mistmatch"
-        )
+        let expected_map = [
+            ("insert_mode", &[&[Some('i')][..]][..]),
+            ("goto_file_start", &[&[Some('g'), Some('g')]]),
+            ("goto_file_end", &[&[Some('g'), Some('e')]]),
+            ("move_line_down", &[&[Some('j')], &[Some('k')]]),
+            ("match_brackets", &[&[Some('m'), Some('m')]]),
+            ("select_around_word", &[&[Some('m'), Some('a'), Some('w')]]),
+            (
+                "select_around_long_word",
+                &[&[Some('m'), Some('a'), Some('W')]],
+            ),
+            ("select_around_pair", &[&[Some('m'), Some('a'), None]]),
+        ]
+        // convert [(&str, &[&[Option<char>]])] to HashMap<String, Vec<Vec<Option<KeyEvent>>>>
+        .into_iter()
+        .map(|(command, bindings)| {
+            let mut bindings = bindings
+                .iter()
+                .map(|binding| {
+                    binding
+                        .iter()
+                        .map(|key| key.map(|k| key!(k,)))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            bindings.sort();
+            (command.to_string(), bindings)
+        })
+        .collect::<HashMap<_, _>>();
+
+        assert_eq!(reverse_map, expected_map, "Mismatch");
     }
 }
