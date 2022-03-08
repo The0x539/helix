@@ -378,7 +378,8 @@ impl EditorView {
 
                             let (grapheme, width) = if grapheme == "\t" {
                                 // make sure we display tab as appropriate amount of spaces
-                                (tab.as_str(), tab_width)
+                                let visual_tab_width = tab_width - (visual_x as usize % tab_width);
+                                (&tab[..visual_tab_width], visual_tab_width)
                             } else {
                                 // Cow will prevent allocations if span contained in a single slice
                                 // which should really be the majority case
@@ -522,7 +523,6 @@ impl EditorView {
         let info = theme.get("info");
         let hint = theme.get("hint");
 
-        // Vec::with_capacity(diagnostics.len()); // rough estimate
         let mut lines = Vec::new();
         for diagnostic in diagnostics {
             let text = Text::styled(
@@ -636,19 +636,6 @@ impl EditorView {
             ),
             base_style,
         ));
-
-        // let indent_info = match doc.indent_style {
-        //     IndentStyle::Tabs => "tabs",
-        //     IndentStyle::Spaces(1) => "spaces:1",
-        //     IndentStyle::Spaces(2) => "spaces:2",
-        //     IndentStyle::Spaces(3) => "spaces:3",
-        //     IndentStyle::Spaces(4) => "spaces:4",
-        //     IndentStyle::Spaces(5) => "spaces:5",
-        //     IndentStyle::Spaces(6) => "spaces:6",
-        //     IndentStyle::Spaces(7) => "spaces:7",
-        //     IndentStyle::Spaces(8) => "spaces:8",
-        //     _ => "indent:ERROR",
-        // };
 
         // Position
         let pos = coords_at_pos(
@@ -856,6 +843,28 @@ impl EditorView {
         let doc = doc_mut!(editor);
         doc.savepoint = None;
         editor.clear_idle_timer(); // don't retrigger
+    }
+
+    pub fn handle_idle_timeout(&mut self, cx: &mut crate::compositor::Context) -> EventResult {
+        if self.completion.is_some()
+            || !cx.editor.config.auto_completion
+            || doc!(cx.editor).mode != Mode::Insert
+        {
+            return EventResult::Ignored(None);
+        }
+
+        let mut cx = commands::Context {
+            register: None,
+            editor: cx.editor,
+            jobs: cx.jobs,
+            count: None,
+            callback: None,
+            last_key: None,
+            on_next_key_callback: None,
+        };
+        crate::commands::insert::idle_completion(&mut cx);
+
+        EventResult::Consumed(None)
     }
 }
 

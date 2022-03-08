@@ -42,16 +42,11 @@ pub struct Application {
     compositor: Compositor,
     editor: Editor,
 
-    // TODO should be separate to take only part of the config
+    // TODO: share an ArcSwap with Editor?
     config: Config,
 
-    // Currently never read from.  Remove the `allow(dead_code)` when
-    // that changes.
     #[allow(dead_code)]
     theme_loader: Arc<theme::Loader>,
-
-    // Currently never read from.  Remove the `allow(dead_code)` when
-    // that changes.
     #[allow(dead_code)]
     syn_loader: Arc<syntax::Loader>,
 
@@ -71,7 +66,6 @@ impl Application {
         let theme_loader =
             std::sync::Arc::new(theme::Loader::new(&conf_dir, &helix_core::runtime_dir()));
 
-        // load default and user config, and merge both
         let true_color = config.editor.true_color || crate::true_color();
         let theme = config
             .theme
@@ -187,17 +181,13 @@ impl Application {
     }
 
     fn render(&mut self) {
-        let editor = &mut self.editor;
-        let compositor = &mut self.compositor;
-        let jobs = &mut self.jobs;
-
         let mut cx = crate::compositor::Context {
-            editor,
-            jobs,
+            editor: &mut self.editor,
+            jobs: &mut self.jobs,
             scroll: None,
         };
 
-        compositor.render(&mut cx);
+        self.compositor.render(&mut cx);
     }
 
     pub async fn event_loop(&mut self) {
@@ -278,32 +268,20 @@ impl Application {
     }
 
     pub fn handle_idle_timeout(&mut self) {
-        use crate::commands::{insert::idle_completion, Context};
-        use helix_view::document::Mode;
-
-        if doc!(self.editor).mode != Mode::Insert || !self.config.editor.auto_completion {
-            return;
-        }
+        use crate::compositor::EventResult;
         let editor_view = self
             .compositor
             .find::<ui::EditorView>()
             .expect("expected at least one EditorView");
 
-        if editor_view.completion.is_some() {
-            return;
-        }
-
-        let mut cx = Context {
-            register: None,
+        let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
-            last_key: None,
             jobs: &mut self.jobs,
-            count: None,
-            callback: None,
-            on_next_key_callback: None,
+            scroll: None,
         };
-        idle_completion(&mut cx);
-        self.render();
+        if let EventResult::Consumed(_) = editor_view.handle_idle_timeout(&mut cx) {
+            self.render();
+        }
     }
 
     pub fn handle_terminal_events(&mut self, event: Option<Result<Event, crossterm::ErrorKind>>) {
@@ -735,15 +713,6 @@ impl Application {
                     Some(call) => call,
                     None => {
                         error!("Method not found {}", method);
-                        // language_server.reply(
-                        //     call.id,
-                        //     // TODO: make a Into trait that can cast to Err(jsonrpc::Error)
-                        //     Err(helix_lsp::jsonrpc::Error {
-                        //         code: helix_lsp::jsonrpc::ErrorCode::MethodNotFound,
-                        //         message: "Method not found".to_string(),
-                        //         data: None,
-                        //     }),
-                        // );
                         return;
                     }
                 };
