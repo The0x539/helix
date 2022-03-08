@@ -68,7 +68,7 @@ pub struct Context<'a> {
     pub register: Option<char>,
     pub count: Option<NonZeroUsize>,
     pub editor: &'a mut Editor,
-    pub last_key: Option<KeyEvent>,
+    pub fallback_key: Option<KeyEvent>,
 
     pub callback: Option<crate::compositor::Callback>,
     pub on_next_key_callback: Option<Box<dyn FnOnce(&mut Context, KeyEvent)>>,
@@ -2141,8 +2141,7 @@ pub fn command_palette(cx: &mut Context) {
             let picker = Picker::new(
                 commands,
                 move |command| match command {
-                    MappableCommand::Typable { doc, name, .. } => match keymap.get(name as &String)
-                    {
+                    MappableCommand::Typable { doc, name, .. } => match keymap.get(name) {
                         Some(bindings) => format!("{} ({})", doc, fmt_binding(bindings)).into(),
                         None => doc.into(),
                     },
@@ -2156,7 +2155,7 @@ pub fn command_palette(cx: &mut Context) {
                         register: None,
                         count: std::num::NonZeroUsize::new(1),
                         editor: cx.editor,
-                        last_key: None,
+                        fallback_key: None,
                         callback: None,
                         on_next_key_callback: None,
                         jobs: cx.jobs,
@@ -4018,22 +4017,24 @@ select_textobject_commands! {
 }
 
 fn select_inside_pair(cx: &mut Context) {
-    if let Some(ch) = cx.last_key.and_then(|ev| ev.char()) {
-        select_textobject(
-            cx,
-            textobject::TextObject::Inside,
-            TextObjectSel::Matching(Some(ch)),
-        )
-    }
+    select_pair(cx, textobject::TextObject::Inside)
 }
 
 fn select_around_pair(cx: &mut Context) {
-    if let Some(ch) = cx.last_key.and_then(|ev| ev.char()) {
-        select_textobject(
-            cx,
-            textobject::TextObject::Around,
-            TextObjectSel::Matching(Some(ch)),
-        )
+    select_pair(cx, textobject::TextObject::Around)
+}
+
+fn select_pair(cx: &mut Context, objtype: textobject::TextObject) {
+    let f = move |cx: &mut Context, event: KeyEvent| {
+        if let Some(ch) = event.char() {
+            select_textobject(cx, objtype, TextObjectSel::Matching(Some(ch)));
+        }
+    };
+    if let Some(event) = cx.fallback_key {
+        f(cx, event);
+    } else {
+        cx.editor.set_status("Select a delimiter...");
+        cx.on_next_key(f);
     }
 }
 

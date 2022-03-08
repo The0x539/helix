@@ -703,7 +703,7 @@ impl EditorView {
         cxt: &mut commands::Context,
         event: KeyEvent,
     ) -> Option<KeymapResult> {
-        cxt.last_key = Some(event);
+        cxt.fallback_key = Some(event);
         cxt.editor.autoinfo = None;
         let key_result = self.keymaps.get_mut(&mode).unwrap().get(event);
         cxt.editor.autoinfo = key_result.sticky.map(|node| node.infobox());
@@ -715,6 +715,10 @@ impl EditorView {
                 for command in commands {
                     command.execute(cxt);
                 }
+            }
+            KeymapResultKind::Fallback(command) => {
+                cxt.fallback_key = Some(event);
+                command.execute(cxt);
             }
             KeymapResultKind::NotFound | KeymapResultKind::Cancelled(_) => return Some(key_result),
         }
@@ -859,7 +863,7 @@ impl EditorView {
             jobs: cx.jobs,
             count: None,
             callback: None,
-            last_key: None,
+            fallback_key: None,
             on_next_key_callback: None,
         };
         crate::commands::insert::idle_completion(&mut cx);
@@ -1085,7 +1089,7 @@ impl Component for EditorView {
             count: None,
             register: None,
             callback: None,
-            last_key: None,
+            fallback_key: None,
             on_next_key_callback: None,
             jobs: context.jobs,
         };

@@ -98,7 +98,7 @@ macro_rules! keymap {
     (@trie
         { $label:literal
             $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+
-            $(_ => $fallback:tt,)?
+            $(_ => $fallback:ident,)?
         }
     ) => {
         keymap!({
@@ -114,7 +114,7 @@ macro_rules! keymap {
     (
         { $label:literal
             $(sticky=$sticky:literal)? $($($key:literal)|+ => $value:tt,)+
-            $(_ => $fallback:tt,)?
+            $(_ => $fallback:ident,)?
         }
     ) => {
         // modified from the hashmap! macro
@@ -135,7 +135,7 @@ macro_rules! keymap {
             )*
             let mut _node = $crate::keymap::KeyTrieNode::new($label, _map, _order, None);
             $( _node.is_sticky = $sticky; )?
-            $( _node.fallback = Some(Box::new(keymap!(@trie $fallback))); )?
+            $( _node.fallback = Some($crate::commands::MappableCommand::$fallback); )?
             $crate::keymap::KeyTrie::Node(_node)
         }
     };
@@ -147,7 +147,7 @@ pub struct KeyTrieNode {
     name: String,
     map: HashMap<KeyEvent, KeyTrie>,
     // TODO: deserialize this, somehow
-    fallback: Option<Box<KeyTrie>>,
+    fallback: Option<MappableCommand>,
     order: Vec<KeyEvent>,
     pub is_sticky: bool,
 }
@@ -172,12 +172,12 @@ impl KeyTrieNode {
         name: &str,
         map: HashMap<KeyEvent, KeyTrie>,
         order: Vec<KeyEvent>,
-        fallback: Option<KeyTrie>,
+        fallback: Option<MappableCommand>,
     ) -> Self {
         Self {
             name: name.to_string(),
             map,
-            fallback: fallback.map(Box::new),
+            fallback,
             order,
             is_sticky: false,
         }
@@ -193,17 +193,6 @@ impl KeyTrieNode {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (Option<KeyEvent>, &KeyTrie)> {
-        self.map
-            .iter()
-            .map(|(k, v)| (Some(*k), v))
-            .chain(self.fallback.as_deref().map(|trie| (None, trie)))
-    }
-
-    pub fn get(&self, key: &KeyEvent) -> Option<&KeyTrie> {
-        self.map.get(key).or(self.fallback.as_deref())
     }
 
     /// Merge another Node in. Leaves and subnodes from the other node replace
@@ -224,14 +213,14 @@ impl KeyTrieNode {
                 self.order.push(key);
             }
         }
-        if self.fallback.is_none() {
+        if other.fallback.is_some() {
             self.fallback = other.fallback;
         }
     }
 
     pub fn infobox(&self) -> Info {
         let mut body: Vec<(&str, BTreeSet<Option<KeyEvent>>)> = Vec::with_capacity(self.len());
-        for (key, trie) in self.iter() {
+        for (key, trie) in self.map.iter() {
             let desc = match trie {
                 KeyTrie::Leaf(cmd) => {
                     if cmd.name() == "no_op" {
@@ -244,10 +233,13 @@ impl KeyTrieNode {
             };
             match body.iter().position(|(d, _)| d == &desc) {
                 Some(pos) => {
-                    body[pos].1.insert(key);
+                    body[pos].1.insert(Some(*key));
                 }
-                None => body.push((desc, BTreeSet::from([key]))),
+                None => body.push((desc, BTreeSet::from([Some(*key)]))),
             }
+        }
+        if let Some(fallback) = &self.fallback {
+            body.push((fallback.doc(), BTreeSet::from([None])));
         }
         body.sort_unstable_by_key(|(_, keys)| {
             match keys.iter().next().unwrap() {
@@ -264,9 +256,30 @@ impl KeyTrieNode {
         }
         Info::from_keymap(self.name(), body)
     }
+
     /// Get a reference to the key trie node's order.
     pub fn order(&self) -> &[KeyEvent] {
         self.order.as_slice()
+    }
+
+    fn search(&self, keys: &'_ [KeyEvent]) -> KeyTrieResult<'_> {
+        match keys {
+            [] => KeyTrieResult::Pending(self),
+            [k] => match self.map.get(k) {
+                Some(trie) => trie.search(&[]),
+                None => {
+                    if let Some(cmd) = &self.fallback {
+                        KeyTrieResult::Fallback(cmd)
+                    } else {
+                        KeyTrieResult::NotFound
+                    }
+                }
+            },
+            [k, rest @ ..] => match self.map.get(k) {
+                Some(trie) => trie.search(rest),
+                None => KeyTrieResult::NotFound,
+            },
+        }
     }
 }
 
@@ -312,16 +325,37 @@ impl KeyTrie {
         self.node_mut().unwrap().merge(node);
     }
 
-    pub fn search(&self, keys: &[KeyEvent]) -> Option<&KeyTrie> {
-        let mut trie = self;
-        for key in keys {
-            trie = match trie {
-                KeyTrie::Node(map) => map.get(key),
-                // leaf encountered while keys left to process
-                KeyTrie::Leaf(_) | KeyTrie::Sequence(_) => None,
-            }?
+    fn search(&self, keys: &[KeyEvent]) -> KeyTrieResult<'_> {
+        match self {
+            KeyTrie::Leaf(cmd) if keys.is_empty() => KeyTrieResult::Matched(cmd),
+            KeyTrie::Sequence(cmds) if keys.is_empty() => KeyTrieResult::MatchedSequence(cmds),
+            KeyTrie::Node(node) => node.search(keys),
+            _ => KeyTrieResult::NotFound,
         }
-        Some(trie)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum KeyTrieResult<'a> {
+    Pending(&'a KeyTrieNode),
+    Matched(&'a MappableCommand),
+    MatchedSequence(&'a [MappableCommand]),
+    Fallback(&'a MappableCommand),
+    NotFound,
+}
+
+impl KeyTrieResult<'_> {
+    fn to_keymap_result(self, sticky: Option<&KeyTrieNode>) -> KeymapResult<'_> {
+        let kind = match self {
+            KeyTrieResult::Pending(node) => KeymapResultKind::Pending(node.clone()),
+            KeyTrieResult::Matched(cmd) => KeymapResultKind::Matched(cmd.clone()),
+            KeyTrieResult::MatchedSequence(cmds) => {
+                KeymapResultKind::MatchedSequence(cmds.to_vec())
+            }
+            KeyTrieResult::Fallback(cmd) => KeymapResultKind::Fallback(cmd.clone()),
+            KeyTrieResult::NotFound => KeymapResultKind::NotFound,
+        };
+        KeymapResult::new(kind, sticky)
     }
 }
 
@@ -332,6 +366,8 @@ pub enum KeymapResultKind {
     Matched(MappableCommand),
     /// Matched a sequence of commands to execute.
     MatchedSequence(Vec<MappableCommand>),
+    /// Key was not found in the root keymap, but a fallback binding was found.
+    Fallback(MappableCommand),
     /// Key was not found in the root keymap
     NotFound,
     /// Key is invalid in combination with previous keys. Contains keys leading upto
@@ -399,9 +435,9 @@ impl Keymap {
                         map_node(cmd_map, trie, keys);
                         keys.pop();
                     }
-                    if let Some(trie) = &next.fallback {
+                    if let Some(f) = &next.fallback {
                         keys.push(None);
-                        map_node(cmd_map, trie, keys);
+                        map_node(cmd_map, &KeyTrie::Leaf(f.clone()), keys);
                         keys.pop();
                     }
                 }
@@ -449,44 +485,26 @@ impl Keymap {
         };
 
         let trie = match trie_node.search(&[*first]) {
-            Some(KeyTrie::Leaf(ref cmd)) => {
-                return KeymapResult::new(KeymapResultKind::Matched(cmd.clone()), self.sticky())
-            }
-            Some(KeyTrie::Sequence(ref cmds)) => {
-                return KeymapResult::new(
-                    KeymapResultKind::MatchedSequence(cmds.clone()),
-                    self.sticky(),
-                )
-            }
-            None => return KeymapResult::new(KeymapResultKind::NotFound, self.sticky()),
-            Some(t) => t,
+            KeyTrieResult::Pending(n) => n,
+            r => return r.to_keymap_result(self.sticky()),
         };
 
         self.state.push(key);
-        match trie.search(&self.state[1..]) {
-            Some(&KeyTrie::Node(ref map)) => {
-                if map.is_sticky {
+        let res = trie.search(&self.state[1..]);
+        match res {
+            KeyTrieResult::Pending(node) => {
+                if node.is_sticky {
                     self.state.clear();
-                    self.sticky = Some(map.clone());
+                    self.sticky = Some(node.clone());
                 }
-                KeymapResult::new(KeymapResultKind::Pending(map.clone()), self.sticky())
             }
-            Some(&KeyTrie::Leaf(ref cmd)) => {
-                self.state.clear();
-                return KeymapResult::new(KeymapResultKind::Matched(cmd.clone()), self.sticky());
+            KeyTrieResult::NotFound => {
+                let kind = KeymapResultKind::Cancelled(std::mem::take(&mut self.state));
+                return KeymapResult::new(kind, self.sticky());
             }
-            Some(&KeyTrie::Sequence(ref cmds)) => {
-                self.state.clear();
-                KeymapResult::new(
-                    KeymapResultKind::MatchedSequence(cmds.clone()),
-                    self.sticky(),
-                )
-            }
-            None => KeymapResult::new(
-                KeymapResultKind::Cancelled(self.state.drain(..).collect()),
-                self.sticky(),
-            ),
+            _ => self.state.clear(),
         }
+        res.to_keymap_result(self.sticky())
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -971,20 +989,20 @@ mod tests {
         );
         // Assumes that `g` is a node in default keymap
         assert_eq!(
-            keymap.root().search(&[key!('g'), key!('$')]).unwrap(),
-            &KeyTrie::Leaf(MappableCommand::goto_line_end),
+            keymap.root().search(&[key!('g'), key!('$')]),
+            KeyTrieResult::Matched(&MappableCommand::goto_line_end),
             "Leaf should be present in merged subnode"
         );
         // Assumes that `gg` is in default keymap
         assert_eq!(
-            keymap.root().search(&[key!('g'), key!('g')]).unwrap(),
-            &KeyTrie::Leaf(MappableCommand::delete_char_forward),
+            keymap.root().search(&[key!('g'), key!('g')]),
+            KeyTrieResult::Matched(&MappableCommand::delete_char_forward),
             "Leaf should replace old leaf in merged subnode"
         );
         // Assumes that `ge` is in default keymap
         assert_eq!(
-            keymap.root().search(&[key!('g'), key!('e')]).unwrap(),
-            &KeyTrie::Leaf(MappableCommand::goto_last_line),
+            keymap.root().search(&[key!('g'), key!('e')]),
+            KeyTrieResult::Matched(&MappableCommand::goto_last_line),
             "Old leaves in subnode should be present in merged node"
         );
 
@@ -1014,16 +1032,17 @@ mod tests {
         let keymap = merged_config.keys.0.get_mut(&Mode::Normal).unwrap();
         // Make sure mapping works
         assert_eq!(
-            keymap
-                .root()
-                .search(&[key!(' '), key!('s'), key!('v')])
-                .unwrap(),
-            &KeyTrie::Leaf(MappableCommand::vsplit),
+            keymap.root().search(&[key!(' '), key!('s'), key!('v')]),
+            KeyTrieResult::Matched(&MappableCommand::vsplit),
             "Leaf should be present in merged subnode"
         );
         // Make sure an order was set during merge
-        let node = keymap.root().search(&[crate::key!(' ')]).unwrap();
-        assert!(!node.node().unwrap().order().is_empty())
+        let node = keymap.root().search(&[crate::key!(' ')]);
+        if let KeyTrieResult::Pending(node) = node {
+            assert!(!node.order().is_empty());
+        } else {
+            panic!("Expected pending node");
+        }
     }
 
     #[test]
@@ -1031,13 +1050,13 @@ mod tests {
         let keymaps = Keymaps::default();
         let root = keymaps.get(&Mode::Normal).unwrap().root();
         assert_eq!(
-            root.search(&[key!(' '), key!('w')]).unwrap(),
-            root.search(&["C-w".parse::<KeyEvent>().unwrap()]).unwrap(),
+            root.search(&[key!(' '), key!('w')]),
+            root.search(&["C-w".parse::<KeyEvent>().unwrap()]),
             "Mismatch for window mode on `Space-w` and `Ctrl-w`"
         );
         assert_eq!(
-            root.search(&[key!('z')]).unwrap(),
-            root.search(&[key!('Z')]).unwrap(),
+            root.search(&[key!('z')]),
+            root.search(&[key!('Z')]),
             "Mismatch for view mode on `z` and `Z`"
         );
     }
