@@ -703,7 +703,6 @@ impl EditorView {
         cxt: &mut commands::Context,
         event: KeyEvent,
     ) -> Option<KeymapResult> {
-        cxt.fallback_key = Some(event);
         cxt.editor.autoinfo = None;
         let key_result = self.keymaps.get_mut(&mode).unwrap().get(event);
         cxt.editor.autoinfo = key_result.sticky.map(|node| node.infobox());
