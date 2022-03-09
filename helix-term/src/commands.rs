@@ -2226,7 +2226,7 @@ pub fn command_palette(cx: &mut Context) {
                     .join(", ")
             };
 
-            let picker = Picker::new(
+            let picker = Picker::new_with_compositor_callback(
                 commands,
                 move |command| match command {
                     MappableCommand::Typable { doc, name, .. } => match keymap.get(name) {
@@ -2248,7 +2248,10 @@ pub fn command_palette(cx: &mut Context) {
                         jobs: cx.jobs,
                     };
                     command.execute(&mut ctx);
-                    // TODO: any on_next_key callbacks registered by the command seem to be lost.
+                    let cb = ctx.on_next_key_callback?;
+                    Some(Box::new(|compositor, _cx| {
+                        compositor.find::<ui::EditorView>().unwrap().on_next_key(cb)
+                    }))
                 },
             );
             compositor.push(Box::new(picker));
