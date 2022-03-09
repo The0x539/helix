@@ -1100,7 +1100,10 @@ mod tests {
                 "select_around_long_word",
                 &[&[Some('m'), Some('a'), Some('W')]],
             ),
-            ("select_around_pair", &[&[Some('m'), Some('a'), None]]),
+            (
+                "prompt_and_select_around_pair",
+                &[&[Some('m'), Some('a'), None]],
+            ),
         ]
         // convert [(&str, &[&[Option<char>]])] to HashMap<String, Vec<Vec<Option<KeyEvent>>>>
         .into_iter()
