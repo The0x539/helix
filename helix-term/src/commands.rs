@@ -68,7 +68,6 @@ pub struct Context<'a> {
     pub register: Option<char>,
     pub count: Option<NonZeroUsize>,
     pub editor: &'a mut Editor,
-    pub fallback_key: Option<KeyEvent>,
 
     pub callback: Option<crate::compositor::Callback>,
     pub on_next_key_callback: Option<Box<dyn FnOnce(&mut Context, KeyEvent)>>,
@@ -408,8 +407,8 @@ impl MappableCommand {
         select_inside_parameter, "Select inside current argument/parameter",
         select_around_cursor_pair, "Select around matching delimiter under cursor",
         select_inside_cursor_pair, "Select inside matching delimiter under cursor",
-        select_around_pair, "Select around matching delimiter",
-        select_inside_pair, "Select inside maching delimiter",
+        prompt_and_select_around_pair, "Select around matching delimiter",
+        prompt_and_select_inside_pair, "Select inside matching delimiter",
         goto_next_function, "Goto next function",
         goto_prev_function, "Goto previous function",
         goto_next_class, "Goto next class",
@@ -523,6 +522,95 @@ impl PartialEq for MappableCommand {
             ) => first_name == second_name,
             _ => false,
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct FallbackCommand {
+    pub name: &'static str,
+    pub fun: fn(cx: &mut Context, event: KeyEvent),
+    pub with_prompt: MappableCommand,
+    pub doc: &'static str,
+}
+
+macro_rules! fallback_commands {
+    ( $($name:ident, $prompting_name:ident, $doc:literal,)* ) => {
+        $(
+            #[allow(non_upper_case_globals)]
+            pub const $name: Self = Self {
+                name: stringify!($name),
+                fun: $name,
+                with_prompt: MappableCommand::$prompting_name,
+                doc: $doc
+            };
+        )*
+
+        pub const FALLBACK_COMMAND_LIST: &'static [Self] = &[
+            $( Self::$name, )*
+        ];
+    }
+}
+
+impl FallbackCommand {
+    pub fn execute(&self, cx: &mut Context, event: KeyEvent) {
+        (self.fun)(cx, event)
+    }
+
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    pub fn doc(&self) -> &str {
+        self.doc
+    }
+
+    #[rustfmt::skip]
+    fallback_commands!(
+        select_around_pair, prompt_and_select_around_pair, "Select around matching delimiter",
+        select_inside_pair, prompt_and_select_inside_pair, "Select inside matching delimiter",
+    );
+}
+
+impl fmt::Debug for FallbackCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FallbackCommand")
+            .field(&self.name())
+            .finish()
+    }
+}
+
+impl fmt::Display for FallbackCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl std::str::FromStr for FallbackCommand {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        FallbackCommand::FALLBACK_COMMAND_LIST
+            .iter()
+            .find(|cmd| cmd.name() == s)
+            .cloned()
+            .ok_or_else(|| anyhow!("No command named '{}'", s))
+    }
+}
+
+impl<'de> Deserialize<'de> for FallbackCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // TODO: code like this can use &'de str to avoid an allocation
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(de::Error::custom)
+    }
+}
+
+impl PartialEq for FallbackCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
     }
 }
 
@@ -2155,12 +2243,12 @@ pub fn command_palette(cx: &mut Context) {
                         register: None,
                         count: std::num::NonZeroUsize::new(1),
                         editor: cx.editor,
-                        fallback_key: None,
                         callback: None,
                         on_next_key_callback: None,
                         jobs: cx.jobs,
                     };
                     command.execute(&mut ctx);
+                    // TODO: any on_next_key callbacks registered by the command seem to be lost.
                 },
             );
             compositor.push(Box::new(picker));
@@ -4016,25 +4104,27 @@ select_textobject_commands! {
     select_inside_cursor_pair(Inside, Matching(None));
 }
 
-fn select_inside_pair(cx: &mut Context) {
-    select_pair(cx, textobject::TextObject::Inside)
+fn prompt_and_select_around_pair(cx: &mut Context) {
+    cx.editor.set_status("Select a delimiter...");
+    cx.on_next_key(select_around_pair);
 }
 
-fn select_around_pair(cx: &mut Context) {
-    select_pair(cx, textobject::TextObject::Around)
+fn prompt_and_select_inside_pair(cx: &mut Context) {
+    cx.editor.set_status("Select a delimiter...");
+    cx.on_next_key(select_inside_pair);
 }
 
-fn select_pair(cx: &mut Context, objtype: textobject::TextObject) {
-    let f = move |cx: &mut Context, event: KeyEvent| {
-        if let Some(ch) = event.char() {
-            select_textobject(cx, objtype, TextObjectSel::Matching(Some(ch)));
-        }
-    };
-    if let Some(event) = cx.fallback_key {
-        f(cx, event);
-    } else {
-        cx.editor.set_status("Select a delimiter...");
-        cx.on_next_key(f);
+fn select_around_pair(cx: &mut Context, event: KeyEvent) {
+    select_pair(cx, textobject::TextObject::Around, event);
+}
+
+fn select_inside_pair(cx: &mut Context, event: KeyEvent) {
+    select_pair(cx, textobject::TextObject::Around, event);
+}
+
+fn select_pair(cx: &mut Context, objtype: textobject::TextObject, event: KeyEvent) {
+    if let Some(ch) = event.char() {
+        select_textobject(cx, objtype, TextObjectSel::Matching(Some(ch)));
     }
 }
 

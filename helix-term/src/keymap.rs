@@ -1,4 +1,4 @@
-pub use crate::commands::MappableCommand;
+pub use crate::commands::{FallbackCommand, MappableCommand};
 use crate::config::Config;
 use helix_core::hashmap;
 use helix_view::{document::Mode, info::Info, input::KeyEvent};
@@ -135,7 +135,7 @@ macro_rules! keymap {
             )*
             let mut _node = $crate::keymap::KeyTrieNode::new($label, _map, _order, None);
             $( _node.is_sticky = $sticky; )?
-            $( _node.fallback = Some($crate::commands::MappableCommand::$fallback); )?
+            $( _node.fallback = Some($crate::commands::FallbackCommand::$fallback); )?
             $crate::keymap::KeyTrie::Node(_node)
         }
     };
@@ -147,7 +147,7 @@ pub struct KeyTrieNode {
     name: String,
     map: HashMap<KeyEvent, KeyTrie>,
     // TODO: deserialize this, somehow
-    fallback: Option<MappableCommand>,
+    fallback: Option<FallbackCommand>,
     order: Vec<KeyEvent>,
     pub is_sticky: bool,
 }
@@ -172,7 +172,7 @@ impl KeyTrieNode {
         name: &str,
         map: HashMap<KeyEvent, KeyTrie>,
         order: Vec<KeyEvent>,
-        fallback: Option<MappableCommand>,
+        fallback: Option<FallbackCommand>,
     ) -> Self {
         Self {
             name: name.to_string(),
@@ -340,7 +340,7 @@ enum KeyTrieResult<'a> {
     Pending(&'a KeyTrieNode),
     Matched(&'a MappableCommand),
     MatchedSequence(&'a [MappableCommand]),
-    Fallback(&'a MappableCommand),
+    Fallback(&'a FallbackCommand),
     NotFound,
 }
 
@@ -367,7 +367,7 @@ pub enum KeymapResultKind {
     /// Matched a sequence of commands to execute.
     MatchedSequence(Vec<MappableCommand>),
     /// Key was not found in the root keymap, but a fallback binding was found.
-    Fallback(MappableCommand),
+    Fallback(FallbackCommand),
     /// Key was not found in the root keymap
     NotFound,
     /// Key is invalid in combination with previous keys. Contains keys leading upto
@@ -435,9 +435,9 @@ impl Keymap {
                         map_node(cmd_map, trie, keys);
                         keys.pop();
                     }
-                    if let Some(f) = &next.fallback {
+                    if let Some(fallback) = &next.fallback {
                         keys.push(None);
-                        map_node(cmd_map, &KeyTrie::Leaf(f.clone()), keys);
+                        map_node(cmd_map, &KeyTrie::Leaf(fallback.with_prompt.clone()), keys);
                         keys.pop();
                     }
                 }

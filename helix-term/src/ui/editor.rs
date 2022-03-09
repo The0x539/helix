@@ -716,8 +716,7 @@ impl EditorView {
                 }
             }
             KeymapResultKind::Fallback(command) => {
-                cxt.fallback_key = Some(event);
-                command.execute(cxt);
+                command.execute(cxt, event);
             }
             KeymapResultKind::NotFound | KeymapResultKind::Cancelled(_) => return Some(key_result),
         }
@@ -862,7 +861,6 @@ impl EditorView {
             jobs: cx.jobs,
             count: None,
             callback: None,
-            fallback_key: None,
             on_next_key_callback: None,
         };
         crate::commands::insert::idle_completion(&mut cx);
@@ -1088,7 +1086,6 @@ impl Component for EditorView {
             count: None,
             register: None,
             callback: None,
-            fallback_key: None,
             on_next_key_callback: None,
             jobs: context.jobs,
         };
