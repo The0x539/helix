@@ -4122,7 +4122,7 @@ fn select_around_pair(cx: &mut Context, event: KeyEvent) {
 }
 
 fn select_inside_pair(cx: &mut Context, event: KeyEvent) {
-    select_pair(cx, textobject::TextObject::Around, event);
+    select_pair(cx, textobject::TextObject::Inside, event);
 }
 
 fn select_pair(cx: &mut Context, objtype: textobject::TextObject, event: KeyEvent) {
