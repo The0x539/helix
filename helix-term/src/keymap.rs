@@ -747,6 +747,10 @@ impl Default for Keymaps {
                 "C-j" | "j" | "down" => jump_view_down,
                 "C-k" | "k" | "up" => jump_view_up,
                 "C-l" | "l" | "right" => jump_view_right,
+                "n" => { "New split scratch buffer"
+                    "C-s" | "s" => hsplit_new,
+                    "C-v" | "v" => vsplit_new,
+                },
             },
 
             // move under <space>c
@@ -797,6 +801,10 @@ impl Default for Keymaps {
                     "C-j" | "j" | "down" => jump_view_down,
                     "C-k" | "k" | "up" => jump_view_up,
                     "C-l" | "l" | "right" => jump_view_right,
+                    "n" => { "New split scratch buffer"
+                        "C-s" | "s" => hsplit_new,
+                        "C-v" | "v" => vsplit_new,
+                    },
                 },
                 "y" => yank_joined_to_clipboard,
                 "Y" => yank_main_selection_to_clipboard,
